@@ -2,10 +2,9 @@
 
 * **Default**: sets ``delegation.backend: default``; ``delegation.model`` / ``delegation.provider``
   apply again.
-* **Model routes**: a route editor built from ``hermes model``'s own pieces (the curses menus, the
-  configured-provider inventory, the model picker with its selection guards, the reasoning picker).
-  Each route is a name + description (what the agent reads), a provider or endpoint, a model and an
-  optional reasoning effort and speed tier, validated before it is saved.
+* **Model routes**: named model/provider routes built from ``hermes model``'s own pickers, or routes
+  to existing Hermes profiles. Model routes may set reasoning and speed tier; profile routes keep
+  the profile's configured model and credentials.
 * **Profile routes**: a multi-select of your other profiles, an optional line about each, a default.
 
 Every write goes through ``store`` (core's ``atomic_config_write``). ``--show`` prints the current
@@ -130,8 +129,8 @@ def _model_routes() -> None:
         rows = [_route_row(o, default, width, desc_width) for o in options] + [
             "+ Add a route", "Done: use Model routes"]
         idx = _radio("Model routes: the agent picks one per subagent", rows, description=(
-            "  Each route: a name and a one-line description the agent reads, plus the provider/model\n"
-            "  it runs on. Enter on a route to edit, delete or make it the default.\n"))
+            "  Each route: a name and a one-line description the agent reads, plus a provider/model\n"
+            "  or Hermes profile. Enter on a route to edit, delete or make it the default.\n"))
         if idx < 0:
             print("Route changes are saved; the delegation mode is unchanged.")
             return
@@ -218,14 +217,16 @@ def _edit_route(existing: Mapping[str, Any], others: list[dict[str, Any]]) -> Op
         print("Route not saved.")
         return None
     route = {"name": name, "description": description, **where}
-    # Keys this editor does not ask about (fallback_providers, ...) survive an edit of the same endpoint.
-    same_endpoint = where.get("provider", "") == _text(existing.get("provider")) and \
-        where.get("base_url", "") == _text(existing.get("base_url"))
-    for key, value in existing.items():
-        if key not in route and key not in store.ROUTE_KEYS and (same_endpoint or key == "fallback_providers"):
-            route[key] = value
-    _pick_effort(route, _text(existing.get("reasoning_effort")))
-    _pick_tier(route, _text(existing.get("service_tier")))
+    if not where.get("profile"):
+        # Endpoint-only settings must not cross a conversion to or from a profile route.
+        model_settings = existing if not existing.get("profile") else {}
+        same_endpoint = where.get("provider", "") == _text(model_settings.get("provider")) and \
+            where.get("base_url", "") == _text(model_settings.get("base_url"))
+        for key, value in model_settings.items():
+            if key not in route and key not in store.ROUTE_KEYS and (same_endpoint or key == "fallback_providers"):
+                route[key] = value
+        _pick_effort(route, _text(model_settings.get("reasoning_effort")))
+        _pick_tier(route, _text(model_settings.get("service_tier")))
     problems = store.validate_route(route, others)
     if problems:
         for problem in problems:
@@ -236,7 +237,7 @@ def _edit_route(existing: Mapping[str, Any], others: list[dict[str, Any]]) -> Op
 
 
 def _pick_where(existing: Mapping[str, Any]) -> Optional[dict[str, str]]:
-    """Provider + model the way ``hermes model`` picks them; ``{provider, model}`` or ``{base_url, model}``."""
+    """A model/provider route using ``hermes model``'s pickers, or an existing Hermes profile."""
     from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
     current_provider, current_url = _text(existing.get("provider")), _text(existing.get("base_url"))
     current_model = _text(existing.get("model"))
@@ -248,20 +249,44 @@ def _pick_where(existing: Mapping[str, Any]) -> Optional[dict[str, str]]:
         rows = []
     entries = format_aux_picker_entries(rows, current_provider=current_provider, current_base_url=current_url)
     entries.append(("__custom__", "Custom endpoint (direct URL)" + ("  ← current" if current_url else ""), []))
+    current_profile = _text(existing.get("profile"))
+    entries.append(("__profile__", "Hermes profile (own model and credentials)" + (
+        "  ← current" if current_profile else ""), []))
     slugs = [slug for slug, _, _ in entries]
-    selected = slugs.index(current_provider) if current_provider in slugs else (
-        len(entries) - 1 if current_url else 0)
-    idx = _radio("Provider for this route:", [label for _, label, _ in entries], selected=selected, searchable=True,
-                 description="  Providers with credentials on this profile. Set up another with `hermes model`.\n")
+    selected = 0
+    if current_profile:
+        selected = slugs.index("__profile__")
+    elif current_provider in slugs:
+        selected = slugs.index(current_provider)
+    elif current_url:
+        selected = slugs.index("__custom__")
+    idx = _radio("Destination for this route:", [label for _, label, _ in entries], selected=selected, searchable=True,
+                 description="  Pick a model/provider or an existing Hermes profile.\n")
     if idx < 0:
         return None
     slug, _, models = entries[idx]
+    if slug == "__profile__":
+        return _pick_profile(current_profile)
     if slug == "__custom__":
         url = _ask("Base URL (OpenAI-compatible, e.g. http://localhost:8080/v1)", current_url)
         model = _ask("Model", current_model) if url else ""
         return {"base_url": url, "model": model} if url and model else None
     model = _pick_model(slug, models, current_model if slug == current_provider else "")
     return {"provider": slug, "model": model} if model else None
+
+
+def _pick_profile(current: str) -> Optional[dict[str, str]]:
+    from hermes_cli.profiles import get_active_profile_name, list_profile_names
+    me = get_active_profile_name()
+    names = [name for name in list_profile_names() if name != me]
+    if not names:
+        print("There are no other profiles to route to yet. Create one with `hermes profile create <name>`, "
+              "give it a model, then run this again.")
+        return None
+    idx = _radio("Hermes profile for this route:", names,
+                 selected=names.index(current) if current in names else 0,
+                 description="  Uses that profile's model and credentials. Only choose trusted profiles.\n")
+    return {"profile": names[idx]} if idx >= 0 else None
 
 
 def _pick_model(provider: str, models: list[str], current: str) -> str:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
 import types
 
@@ -126,6 +127,44 @@ def test_each_option_reaches_child_construction_on_its_route(loaded, children):
     # No option and no default: today's delegation route (inherit the parent).
     assert plain["model"] is None and plain["override_provider"] is None and plain["override_base_url"] is None
     assert plain["override_service_tier"] is None and "label" not in getattr(plain_child, "_delegate_route", {})
+
+
+@pytest.mark.parametrize("missing_profile", [False, True])
+def test_one_batch_routes_models_and_profiles_without_crossing_credentials(
+        tmp_path, monkeypatch, plugin_root, children, missing_profile):
+    from tools.delegate_tool import delegate_task
+
+    profile_home = tmp_path / "os-home" / ".hermes" / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(yaml.safe_dump({"model": {
+        "provider": "custom", "base_url": "https://coder.invalid/v1", "default": "coder-model",
+        "key_env": "PROFILE_KEY"}}), encoding="utf-8")
+    (profile_home / ".env").write_text("PROFILE_KEY=coder-key\n", encoding="utf-8")
+    monkeypatch.setenv("PROFILE_KEY", "launch-key")
+    options = [OPTIONS[0], {"name": "code", "description": "Repository work.", "profile": "coder"},
+               {"name": "ghost", "description": "Absent profile.", "profile": "absent"}]
+    manager = _load(tmp_path, monkeypatch, plugin_root, _delegation(options=options))
+    try:
+        schema = _definition()["parameters"]["properties"]["tasks"]["items"]["properties"]
+        assert schema["option"]["enum"] == ["local", "code", "ghost"]
+        tasks = [{"goal": "short lookup", "option": "local"}, {"goal": "repository check", "option": "code"}]
+        if missing_profile:
+            tasks.append({"goal": "refuse only this task", "option": "ghost"})
+        out = json.loads(delegate_task(tasks=tasks, parent_agent=_parent()))
+    finally:
+        manager.unload()
+    assert [r["status"] for r in out["results"]] == ["completed", "completed"] + (
+        ["error"] if missing_profile else [])
+    (model, model_child), (profile, profile_child) = children
+    assert model["profile_home"] is None
+    assert (model["model"], model["override_base_url"], model["override_api_key"]) == (
+        "local-model", "http://localhost:9/v1", "local-key")
+    assert os.path.samefile(profile["profile_home"], profile_home)
+    assert (profile["model"], profile["override_base_url"], profile["override_api_key"]) == (
+        "coder-model", "https://coder.invalid/v1", "coder-key")
+    assert (model_child._delegate_route["label"], profile_child._delegate_route["label"]) == ("local", "code")
+    if missing_profile:
+        assert "does not exist" in out["results"][2]["error"]
 
 
 def test_unknown_option_is_refused_before_any_child_is_built(loaded, children):
