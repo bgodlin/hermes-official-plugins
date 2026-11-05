@@ -76,13 +76,16 @@ hermes delegation config --show   # print the current mode and routes (no termin
 
 1. **Pick the mode**: Default, Model routes or Profile routes (the cursor opens on the current one).
 2. **Model routes** opens a route editor built from `hermes model`'s own pickers. The list shows each
-   route's name, description and `provider · model · reasoning · tier`; pick a route to edit it,
-   delete it or make it the default, or **+ Add a route**: a name (what the agent picks), a one-line
+   route's name, description and `provider · model · reasoning · tier` or `profile: name`; pick a
+   route to edit it, delete it or make it the default, or **+ Add a route**: a name (what the agent picks), a one-line
    description (what the agent reads), a provider from the ones you have credentials for (or a
    custom endpoint), a model from `hermes model`'s model picker, an optional reasoning effort, and a
-   speed tier when the route offers one. A route is validated before it is saved: the provider must
-   be known, the effort a real level, and the tier one the route offers. **Done** switches the mode;
-   with no default set it first asks for one, with *No default — unrouted tasks use the main agent's
+   speed tier when the route offers one. Alternatively, choose **Hermes profile** in the destination
+   picker and select an existing profile: it keeps its own model and credentials, so there are no
+   model, reasoning or tier questions. Editing a profile route keeps that destination selected;
+   cancelling either picker leaves it unchanged. A route is validated before it is saved: for model
+   routes, the provider must be known, the effort a real level, and the tier one the route offers.
+   **Done** switches the mode; with no default set it first asks for one, with *No default — unrouted tasks use the main agent's
    model* as an explicit choice.
 3. **Profile routes** is just a checklist of your other profiles, an optional line about each newly
    checked one (listed profiles keep theirs), and a default. Profiles keep their own models, so there

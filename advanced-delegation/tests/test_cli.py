@@ -288,6 +288,94 @@ def _profile(home, name):
     (home / "profiles" / name / "config.yaml").write_text("model:\n  default: m\n", encoding="utf-8")
 
 
+@pytest.mark.parametrize("editing", [False, True])
+def test_model_routes_editor_adds_and_preserves_a_profile_route(terminal, home, editing):
+    _profile(home, "coder")
+    model = {"name": "fast", "description": "Quick.", "provider": "openrouter", "model": "m1"}
+    profile = {"name": "code", "description": "Repository work.", "profile": "coder"}
+    _write(home, {"delegation": {"backend": "model_map", "backends": {"model_map": {
+        "options": [model, profile] if editing else [model], "default": "code" if editing else "fast"}}}})
+    terminal.menu(ENTER)                       # current mode -> Model routes
+    terminal.menu(DOWN, ENTER)                 # code (edit) or + Add a route
+    if editing:
+        terminal.menu(ENTER)                   # route actions -> Edit
+        terminal.type("", "")
+        terminal.menu(ENTER)                   # destination keeps the existing profile route
+    else:
+        terminal.type("code", "Repository work.")
+        terminal.menu(DOWN, DOWN, DOWN, ENTER) # destination -> Hermes profile
+    terminal.menu(ENTER)                       # profile picker -> coder; no model/effort/tier questions
+    terminal.menu(QUIT)
+    _run("config")
+    saved = _config(home)["delegation"]["backends"]["model_map"]
+    assert saved["options"] == [model, profile]
+    assert saved["default"] == ("code" if editing else "fast")
+
+
+@pytest.mark.parametrize("at_profile_picker", [False, True])
+def test_cancel_profile_route_edit_leaves_the_config_unchanged(terminal, home, at_profile_picker):
+    _profile(home, "coder")
+    _write(home, {"delegation": {"backend": "model_map", "backends": {"model_map": {
+        "options": [{"name": "code", "description": "Code.", "profile": "coder"}], "default": "code"}}}})
+    before = (home / "config.yaml").read_bytes()
+    terminal.menu(ENTER)                       # current mode -> Model routes
+    terminal.menu(ENTER)                       # route -> code
+    terminal.menu(ENTER)                       # action -> Edit
+    terminal.type("", "")
+    if at_profile_picker:
+        terminal.menu(ENTER)                   # destination -> existing profile
+    terminal.menu(QUIT)                        # cancel destination or profile selection
+    terminal.menu(QUIT)                        # leave routes list
+    _run("config")
+    assert (home / "config.yaml").read_bytes() == before
+
+
+def test_converting_a_model_route_to_a_profile_drops_model_settings(terminal, home):
+    _profile(home, "coder")
+    _write(home, {"delegation": {"backend": "model_map", "backends": {"model_map": {"options": [{
+        "name": "code", "description": "Code.", "provider": "openrouter", "model": "m1",
+        "api_key": "example-only", "reasoning_effort": "high", "service_tier": "fast",
+        "fallback_providers": [{"provider": "anthropic", "model": "m2"}]}]}}}})
+    terminal.menu(ENTER)
+    terminal.menu(ENTER)
+    terminal.menu(ENTER)
+    terminal.type("", "")
+    terminal.menu(DOWN, DOWN, DOWN, ENTER)     # destination -> Hermes profile
+    terminal.menu(ENTER)                       # profile -> coder
+    terminal.menu(QUIT)
+    _run("config")
+    assert _config(home)["delegation"]["backends"]["model_map"]["options"] == [
+        {"name": "code", "description": "Code.", "profile": "coder"}]
+
+
+def test_converting_a_profile_route_to_a_model_drops_ignored_overrides(terminal, home):
+    _profile(home, "coder")
+    _write(home, {"delegation": {"backend": "model_map", "backends": {"model_map": {"options": [{
+        "name": "code", "description": "Code.", "profile": "coder", "api_key": "example-only",
+        "reasoning_effort": "high", "service_tier": "fast", "fallback_providers": []}]}}}})
+    terminal.menu(ENTER)
+    terminal.menu(ENTER)
+    terminal.menu(ENTER)
+    terminal.type("", "", "http://example.invalid/v1", "picked-model")
+    terminal.menu(UP, ENTER)                    # existing profile -> Custom endpoint
+    terminal.menu(ENTER)                       # reasoning -> Inherit parent
+    terminal.menu(QUIT)
+    _run("config")
+    assert _config(home)["delegation"]["backends"]["model_map"]["options"] == [{
+        "name": "code", "description": "Code.", "base_url": "http://example.invalid/v1", "model": "picked-model"}]
+
+
+def test_model_routes_profile_picker_without_other_profiles_does_not_save(terminal, capsys, home):
+    terminal.menu(DOWN, ENTER)                 # mode -> Model routes
+    terminal.menu(ENTER)                       # Add a route
+    terminal.type("code", "Code.")
+    terminal.menu(DOWN, DOWN, DOWN, ENTER)     # destination -> Hermes profile
+    terminal.menu(QUIT)
+    _run("config")
+    assert "hermes profile create" in capsys.readouterr().out
+    assert not _config(home).get("delegation")
+
+
 def test_profile_routes_is_a_multi_select_of_existing_profiles_not_the_model_editor(terminal, home):
     _profile(home, "coder")
     _profile(home, "researcher")
